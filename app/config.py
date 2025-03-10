@@ -1,5 +1,13 @@
 import threading
-import tomllib
+import sys
+# tomllib는 Python 3.11 이상에서만 사용 가능
+if sys.version_info >= (3, 11):
+    import tomllib
+else:
+    try:
+        import tomli as tomllib
+    except ImportError:
+        raise ImportError("tomli 패키지가 필요합니다. 'pip install tomli' 명령어로 설치하세요.")
 from pathlib import Path
 from typing import Dict
 

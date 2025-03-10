@@ -1,4 +1,6 @@
 from typing import Dict, List, Literal, Optional, Union
+import functools
+import requests
 
 from openai import (
     APIError,
@@ -8,11 +10,12 @@ from openai import (
     OpenAIError,
     RateLimitError,
 )
-from tenacity import retry, stop_after_attempt, wait_random_exponential
+from tenacity import retry, stop_after_attempt, wait_random_exponential, retry_if_exception_type
 
 from app.config import LLMSettings, config
 from app.logger import logger  # Assuming a logger is set up in your app
 from app.schema import Message
+from app.xai_client import AsyncXAI
 
 
 class LLM:
@@ -45,6 +48,11 @@ class LLM:
                     base_url=self.base_url,
                     api_key=self.api_key,
                     api_version=self.api_version,
+                )
+            elif self.api_type == "xai":
+                self.client = AsyncXAI(
+                    base_url=self.base_url,
+                    api_key=self.api_key
                 )
             else:
                 self.client = AsyncOpenAI(api_key=self.api_key, base_url=self.base_url)
@@ -97,10 +105,41 @@ class LLM:
 
         return formatted_messages
 
-    @retry(
-        wait=wait_random_exponential(min=1, max=60),
-        stop=stop_after_attempt(6),
-    )
+    # xAI API용 재시도 로직을 별도로 정의
+    @staticmethod
+    def xai_retry_decorator():
+        """xAI API 호출 시 적용할 재시도 설정"""
+        return retry(
+            wait=wait_random_exponential(min=2, max=90),  # 기다리는 시간을 늘림
+            stop=stop_after_attempt(3),  # 재시도 횟수를 6에서 3으로 줄임
+            retry=retry_if_exception_type(
+                (ValueError, OpenAIError, requests.exceptions.RequestException)
+            ),
+        )
+
+    # OpenAI API용 기존 재시도 로직
+    @staticmethod
+    def openai_retry_decorator():
+        """OpenAI API 호출 시 적용할 재시도 설정"""
+        return retry(
+            wait=wait_random_exponential(min=1, max=60),
+            stop=stop_after_attempt(6),
+        )
+
+    # API 타입에 따라 적절한 재시도 데코레이터 반환
+    def get_retry_decorator(self):
+        """API 타입에 따라 적절한 재시도 데코레이터 반환"""
+        if self.api_type == "xai":
+            return self.xai_retry_decorator()
+        else:
+            return self.openai_retry_decorator()
+
+    @property
+    def is_xai(self):
+        """현재 LLM이 xAI인지 확인"""
+        return self.api_type == "xai"
+    
+    # 동적으로 적용되는 retry 데코레이터 (ask 메서드 위에 위치)
     async def ask(
         self,
         messages: List[Union[dict, Message]],
@@ -125,62 +164,78 @@ class LLM:
             OpenAIError: If API call fails after retries
             Exception: For unexpected errors
         """
-        try:
-            # Format system and user messages
-            if system_msgs:
-                system_msgs = self.format_messages(system_msgs)
-                messages = system_msgs + self.format_messages(messages)
-            else:
-                messages = self.format_messages(messages)
+        # API 타입에 맞는 재시도 로직을 동적으로 적용
+        @self.get_retry_decorator()
+        async def _ask_with_retry():
+            # 기존 ask 메서드의 내용을 여기로 이동
+            try:
+                # Format system and user messages
+                if system_msgs:
+                    system_msgs_formatted = self.format_messages(system_msgs)
+                    messages_formatted = system_msgs_formatted + self.format_messages(messages)
+                else:
+                    messages_formatted = self.format_messages(messages)
 
-            if not stream:
-                # Non-streaming request
+                # xAI API 사용 시 스트리밍 강제 비활성화
+                use_stream = stream
+                if self.is_xai:
+                    use_stream = False
+                    logger.info("xAI API에서는 스트리밍을 지원하지 않아 비활성화합니다")
+
+                if not use_stream:
+                    # Non-streaming request
+                    response = await self.client.chat.completions.create(
+                        model=self.model,
+                        messages=messages_formatted,
+                        max_tokens=self.max_tokens,
+                        temperature=temperature or self.temperature,
+                        stream=False,
+                    )
+                    
+                    if not response.choices or not response.choices[0].message.content:
+                        raise ValueError("Empty or invalid response from LLM")
+                    
+                    # xAI API 응답 출력
+                    if self.is_xai:
+                        print(response.choices[0].message.content)
+                        print()  # 줄바꿈 추가
+                    
+                    return response.choices[0].message.content
+
+                # Streaming request - xAI는 위에서 이미 처리되어 이 부분은 OpenAI만 해당
                 response = await self.client.chat.completions.create(
                     model=self.model,
-                    messages=messages,
+                    messages=messages_formatted,
                     max_tokens=self.max_tokens,
                     temperature=temperature or self.temperature,
-                    stream=False,
+                    stream=True,
                 )
-                if not response.choices or not response.choices[0].message.content:
-                    raise ValueError("Empty or invalid response from LLM")
-                return response.choices[0].message.content
 
-            # Streaming request
-            response = await self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                max_tokens=self.max_tokens,
-                temperature=temperature or self.temperature,
-                stream=True,
-            )
+                collected_messages = []
+                async for chunk in response:
+                    chunk_message = chunk.choices[0].delta.content or ""
+                    collected_messages.append(chunk_message)
+                    print(chunk_message, end="", flush=True)
 
-            collected_messages = []
-            async for chunk in response:
-                chunk_message = chunk.choices[0].delta.content or ""
-                collected_messages.append(chunk_message)
-                print(chunk_message, end="", flush=True)
+                print()  # Newline after streaming
+                full_response = "".join(collected_messages).strip()
+                if not full_response:
+                    raise ValueError("Empty response from streaming LLM")
+                return full_response
 
-            print()  # Newline after streaming
-            full_response = "".join(collected_messages).strip()
-            if not full_response:
-                raise ValueError("Empty response from streaming LLM")
-            return full_response
+            except ValueError as ve:
+                logger.error(f"Validation error: {ve}")
+                raise
+            except OpenAIError as oe:
+                logger.error(f"OpenAI API error: {oe}")
+                raise
+            except Exception as e:
+                logger.error(f"Unexpected error in ask: {e}")
+                raise
 
-        except ValueError as ve:
-            logger.error(f"Validation error: {ve}")
-            raise
-        except OpenAIError as oe:
-            logger.error(f"OpenAI API error: {oe}")
-            raise
-        except Exception as e:
-            logger.error(f"Unexpected error in ask: {e}")
-            raise
+        # 실제 실행
+        return await _ask_with_retry()
 
-    @retry(
-        wait=wait_random_exponential(min=1, max=60),
-        stop=stop_after_attempt(6),
-    )
     async def ask_tool(
         self,
         messages: List[Union[dict, Message]],
@@ -192,73 +247,79 @@ class LLM:
         **kwargs,
     ):
         """
-        Ask LLM using functions/tools and return the response.
+        Send a prompt to the LLM and get a response with tool calls.
 
         Args:
             messages: List of conversation messages
             system_msgs: Optional system messages to prepend
-            timeout: Request timeout in seconds
-            tools: List of tools to use
-            tool_choice: Tool choice strategy
-            temperature: Sampling temperature for the response
-            **kwargs: Additional completion arguments
+            timeout (int): Request timeout in seconds
+            tools (List[dict]): Tools to make available for the model
+            tool_choice: Whether tools are required, optional, or not available
+            temperature (float): Sampling temperature for the response
+            **kwargs: Additional parameters to pass to the API
 
         Returns:
-            ChatCompletionMessage: The model's response
+            Message: The assistant's response message
 
         Raises:
-            ValueError: If tools, tool_choice, or messages are invalid
+            ValueError: If messages or tools are invalid, or response is empty
             OpenAIError: If API call fails after retries
             Exception: For unexpected errors
         """
-        try:
-            # Validate tool_choice
-            if tool_choice not in ["none", "auto", "required"]:
-                raise ValueError(f"Invalid tool_choice: {tool_choice}")
+        # API 타입에 맞는 재시도 로직을 동적으로 적용
+        @self.get_retry_decorator()
+        async def _ask_tool_with_retry():
+            try:
+                # Validate tool_choice
+                if tool_choice not in ["none", "auto", "required"]:
+                    raise ValueError(f"Invalid tool_choice: {tool_choice}")
 
-            # Format messages
-            if system_msgs:
-                system_msgs = self.format_messages(system_msgs)
-                messages = system_msgs + self.format_messages(messages)
-            else:
-                messages = self.format_messages(messages)
+                # Format messages
+                if system_msgs:
+                    system_msgs_formatted = self.format_messages(system_msgs)
+                    messages_formatted = system_msgs_formatted + self.format_messages(messages)
+                else:
+                    messages_formatted = self.format_messages(messages)
 
-            # Validate tools if provided
-            if tools:
-                for tool in tools:
-                    if not isinstance(tool, dict) or "type" not in tool:
-                        raise ValueError("Each tool must be a dict with 'type' field")
+                # Validate tools if provided
+                if tools:
+                    for tool in tools:
+                        if not isinstance(tool, dict) or "type" not in tool:
+                            raise ValueError("Each tool must be a dict with 'type' field")
 
-            # Set up the completion request
-            response = await self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                temperature=temperature or self.temperature,
-                max_tokens=self.max_tokens,
-                tools=tools,
-                tool_choice=tool_choice,
-                timeout=timeout,
-                **kwargs,
-            )
+                # Set up the completion request
+                response = await self.client.chat.completions.create(
+                    model=self.model,
+                    messages=messages_formatted,
+                    temperature=temperature or self.temperature,
+                    max_tokens=self.max_tokens,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                    timeout=timeout,
+                    **kwargs,
+                )
 
-            # Check if response is valid
-            if not response.choices or not response.choices[0].message:
-                print(response)
-                raise ValueError("Invalid or empty response from LLM")
+                # Check if response is valid
+                if not response.choices or not response.choices[0].message:
+                    print(response)
+                    raise ValueError("Invalid or empty response from LLM")
 
-            return response.choices[0].message
+                return response.choices[0].message
 
-        except ValueError as ve:
-            logger.error(f"Validation error in ask_tool: {ve}")
-            raise
-        except OpenAIError as oe:
-            if isinstance(oe, AuthenticationError):
-                logger.error("Authentication failed. Check API key.")
-            elif isinstance(oe, RateLimitError):
-                logger.error("Rate limit exceeded. Consider increasing retry attempts.")
-            elif isinstance(oe, APIError):
-                logger.error(f"API error: {oe}")
-            raise
-        except Exception as e:
-            logger.error(f"Unexpected error in ask_tool: {e}")
-            raise
+            except ValueError as ve:
+                logger.error(f"Validation error in ask_tool: {ve}")
+                raise
+            except OpenAIError as oe:
+                if isinstance(oe, AuthenticationError):
+                    logger.error("Authentication failed. Check API key.")
+                elif isinstance(oe, RateLimitError):
+                    logger.error("Rate limit exceeded. Consider increasing retry attempts.")
+                elif isinstance(oe, APIError):
+                    logger.error(f"API error: {oe}")
+                raise
+            except Exception as e:
+                logger.error(f"Unexpected error in ask_tool: {e}")
+                raise
+                
+        # 실제 실행
+        return await _ask_tool_with_retry()

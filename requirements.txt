@@ -4,18 +4,19 @@ tenacity~=9.0.0
 pyyaml~=6.0.2
 loguru~=0.7.3
 numpy
-datasets~=3.2.0
+# datasets~=3.2.0  # 종속성 문제가 있을 수 있음
 
 html2text~=2024.2.26
-gymnasium~=1.0.0
+# gymnasium~=1.0.0  # 종속성 문제가 있을 수 있음
 pillow~=10.4.0
-browsergym~=0.13.3
+# browsergym~=0.13.3  # weblinx-browsergym 패키지를 찾을 수 없음
 uvicorn~=0.34.0
 unidiff~=0.7.5
-browser-use~=0.1.40
-googlesearch-python~=1.3.0
+# browser-use~=0.1.40  # 패키지를 찾을 수 없음
+# googlesearch-python~=1.3.0  # 종속성 문제가 있을 수 있음
 
 aiofiles~=24.1.0
 pydantic_core~=2.27.2
 colorama~=0.4.6
-playwright~=1.49.1
+# playwright~=1.49.1  # 종속성 문제가 있을 수 있음
+requests>=2.30.0

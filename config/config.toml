@@ -15,12 +15,22 @@
 # api_version="AZURE API VERSION" #"2024-08-01-preview"
 
 # Global LLM configuration
-[llm]
-# model = "gpt-4o-mini"
-# base_url = "https://api.openai.com/v1"
-# api_key = "sk-..."  
-# max_tokens = 4096
-# temperature = 0.0
+[llm.default]
+model = "grok-2-latest"
+base_url = "https://api.x.ai/v1"
+api_key = "xai-Q01je140MI5xz5EMXYf1HNkFDeA9fLWDejHsgyzDFRRak34gH80LLmXCG35NRGxWGJrX2oPe1r5fqebH"
+api_type = "xai"
+max_tokens = 4096
+temperature = 0.7
+
+# Vision model configuration
+[llm.vision]
+model = "grok-2-vision-latest"
+base_url = "https://api.x.ai/v1"
+api_key = "xai-Q01je140MI5xz5EMXYf1HNkFDeA9fLWDejHsgyzDFRRak34gH80LLmXCG35NRGxWGJrX2oPe1r5fqebH"
+api_type = "xai"
+max_tokens = 4096
+temperature = 0.7
 
 # Optional configuration for specific LLM models
 # [llm.vision]

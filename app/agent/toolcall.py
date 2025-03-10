@@ -47,8 +47,9 @@ class ToolCallAgent(ReActAgent):
             tools=self.available_tools.to_params(),
             tool_choice=self.tool_choices,
         )
+        
         self.tool_calls = response.tool_calls
-
+        
         # Log response info
         logger.info(f"✨ {self.name}'s thoughts: {response.content}")
         logger.info(
@@ -67,7 +68,7 @@ class ToolCallAgent(ReActAgent):
                         f"🤔 Hmm, {self.name} tried to use tools when they weren't available!"
                     )
                 if response.content:
-                    self.memory.add_message(Message.assistant_message(response.content))
+                    self.messages.append(Message.assistant_message(response.content))
                     return True
                 return False
 
@@ -79,7 +80,7 @@ class ToolCallAgent(ReActAgent):
                 if self.tool_calls
                 else Message.assistant_message(response.content)
             )
-            self.memory.add_message(assistant_msg)
+            self.messages.append(assistant_msg)
 
             if self.tool_choices == "required" and not self.tool_calls:
                 return True  # Will be handled in act()
@@ -91,7 +92,7 @@ class ToolCallAgent(ReActAgent):
             return bool(self.tool_calls)
         except Exception as e:
             logger.error(f"🚨 Oops! The {self.name}'s thinking process hit a snag: {e}")
-            self.memory.add_message(
+            self.messages.append(
                 Message.assistant_message(
                     f"Error encountered while processing: {str(e)}"
                 )

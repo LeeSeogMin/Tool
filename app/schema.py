@@ -79,9 +79,18 @@ class Message(BaseModel):
         return cls(role="system", content=content)
 
     @classmethod
-    def assistant_message(cls, content: Optional[str] = None) -> "Message":
-        """Create an assistant message"""
-        return cls(role="assistant", content=content)
+    def assistant_message(cls, content: Optional[str] = None, tool_calls: Optional[List[ToolCall]] = None) -> "Message":
+        """
+        Create an assistant message, optionally with tool calls
+        
+        Args:
+            content: The message content
+            tool_calls: Optional list of tool calls
+        
+        Returns:
+            Message: A new assistant message
+        """
+        return cls(role="assistant", content=content, tool_calls=tool_calls)
 
     @classmethod
     def tool_message(cls, content: str, name, tool_call_id: str) -> "Message":
