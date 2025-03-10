@@ -27,4 +27,3 @@ temperature = 0.0
 model = "gpt-4o"
 base_url = "https://api.openai.com/v1"
 api_key = "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" 
-
